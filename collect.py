@@ -41,6 +41,14 @@ def current_10min_slot_iso():
     return slot_time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def normalize_sampled_at(sampled_at):
+    if not sampled_at:
+        return current_10min_slot_iso()
+
+    parsed = datetime.fromisoformat(sampled_at)
+    return parsed.replace(second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def now_iso():
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -170,7 +178,7 @@ def load_stats_from_file(file_path):
         return json.load(f)
 
 
-def extract_pv_rank(response_json):
+def extract_pv_rank(response_json, sampled_at=None):
     result = response_json.get("result", {})
     stat_data_list = result.get("statDataList", [])
 
@@ -178,11 +186,11 @@ def extract_pv_rank(response_json):
         if stat.get("dataId") == "pvRank":
             # 네이버 API utime을 그대로 쓰지 않고,
             # 우리가 수집한 시각을 10분 단위로 정렬해서 저장
-            sampled_at = current_10min_slot_iso()
+            normalized_sampled_at = normalize_sampled_at(sampled_at)
 
             data = stat.get("data", {})
             rows = columnar_to_rows(data)
-            return sampled_at, rows
+            return normalized_sampled_at, rows
 
     raise RuntimeError("응답에서 dataId=pvRank를 찾지 못했습니다.")
 
@@ -346,6 +354,10 @@ def main():
         "--from-file",
         help="API 대신 JSON 파일에서 읽어 테스트할 때 사용"
     )
+    parser.add_argument(
+        "--sampled-at",
+        help="수집 시각을 직접 지정할 때 사용. 지정하지 않으면 현재 10분 슬롯을 사용"
+    )
     args = parser.parse_args()
 
     init_db()
@@ -355,7 +367,7 @@ def main():
     else:
         response_json = fetch_stats_from_api()
 
-    sampled_at, rows = extract_pv_rank(response_json)
+    sampled_at, rows = extract_pv_rank(response_json, sampled_at=args.sampled_at)
     saved_count = save_pv_rank(sampled_at, rows)
 
     print(f"[OK] sampled_at={sampled_at}, saved={saved_count}")
