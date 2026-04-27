@@ -46,7 +46,12 @@ def run_once(scheduled_time):
     print(f"[NOW] {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}")
 
     result = subprocess.run(
-        [sys.executable, "collect.py"],
+        [
+            sys.executable,
+            "collect.py",
+            "--sampled-at",
+            scheduled_time.strftime("%Y-%m-%dT%H:%M:%S"),
+        ],
         capture_output=True,
         text=True
     )
