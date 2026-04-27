@@ -27,6 +27,7 @@ st.cache_data.clear()
 def get_conn():
     return sqlite3.connect(DB_PATH)
 
+
 @st.cache_data(ttl=30)
 def load_stat_dates():
     conn = get_conn()
@@ -56,11 +57,39 @@ def load_snapshot_times(stat_date):
     conn.close()
     return df
 
+
 @st.cache_data(ttl=30)
 def load_snapshot(stat_date, sampled_at):
     conn = get_conn()
 
     df = pd.read_sql_query("""
+        WITH ranked AS (
+            SELECT
+                sampled_at,
+                stat_date,
+                rank_no,
+                uri,
+                title,
+                reporter,
+                cv,
+                cv_p,
+                create_date,
+                LAG(cv) OVER (
+                    PARTITION BY uri
+                    ORDER BY sampled_at
+                ) AS prev_cv,
+                LAG(rank_no) OVER (
+                    PARTITION BY uri
+                    ORDER BY sampled_at
+                ) AS prev_rank_no,
+                LAG(sampled_at) OVER (
+                    PARTITION BY uri
+                    ORDER BY sampled_at
+                ) AS prev_sampled_at
+            FROM naver_pv_rank_snapshots
+            WHERE stat_date = ?
+              AND sampled_at <= ?
+        )
         SELECT
             sampled_at,
             stat_date,
@@ -70,15 +99,19 @@ def load_snapshot(stat_date, sampled_at):
             reporter,
             cv,
             cv_p,
-            create_date
-        FROM naver_pv_rank_snapshots
+            create_date,
+            prev_cv,
+            prev_rank_no,
+            prev_sampled_at
+        FROM ranked
         WHERE stat_date = ?
           AND sampled_at = ?
         ORDER BY rank_no ASC
-    """, conn, params=(stat_date, sampled_at))
+    """, conn, params=(stat_date, sampled_at, stat_date, sampled_at))
 
     conn.close()
     return df
+
 
 @st.cache_data(ttl=30)
 def load_history(stat_date, uri):
@@ -140,7 +173,7 @@ with st.sidebar:
     selected_stat_date = st.selectbox(
         "조회 날짜",
         available_dates,
-        index=0
+        index=default_date_index
     )
 
     times_df = load_snapshot_times(selected_stat_date)
@@ -164,41 +197,25 @@ with st.sidebar:
     st.caption(f"자동 새로고침 횟수: {refresh_count}")
 
 
-current_df = load_snapshot(selected_stat_date, selected_time)
+df = load_snapshot(selected_stat_date, selected_time)
 
-
-if current_df.empty:
+if df.empty:
     st.warning("선택한 시각의 데이터가 없습니다.")
     st.stop()
 
-# 직전 스냅샷 찾기
-selected_index = sampled_times.index(selected_time)
-compare_time = sampled_times[selected_index + 1] if selected_index + 1 < len(sampled_times) else None
-
-if compare_time:
-    prev_df = load_snapshot(selected_stat_date, compare_time)
-    prev_df = prev_df[["uri", "rank_no", "cv"]].rename(columns={
-        "rank_no": "prev_rank_no",
-        "cv": "prev_cv"
-    })
-else:
-    prev_df = pd.DataFrame(columns=["uri", "prev_rank_no", "prev_cv"])
-
-df = current_df.merge(prev_df, on="uri", how="left")
-
 df["delta_cv"] = df["cv"] - df["prev_cv"]
-df["delta_cv"] = df["delta_cv"].fillna(0)
-
 df["rank_change"] = df["prev_rank_no"] - df["rank_no"]
-df["rank_change"] = df["rank_change"].fillna(0)
+
+available_prev_times = df["prev_sampled_at"].dropna().unique().tolist()
+compare_time = available_prev_times[0] if len(available_prev_times) == 1 else None
 
 st.caption(f"조회 날짜: {selected_stat_date}")
 st.caption(f"현재 선택 시각: {selected_time}")
 
 if compare_time:
-    st.caption(f"비교 기준 시각: {compare_time}")
+    st.caption(f"대표 비교 기준 시각: {compare_time}")
 else:
-    st.caption("선택 날짜 안에서 비교 가능한 이전 수집 데이터가 아직 없습니다.")
+    st.caption("기사별로 가장 최근의 이전 수집 시점과 비교합니다. 이전 데이터가 없는 기사는 '-'로 표시됩니다.")
 
 
 col1, col2, col3, col4 = st.columns(4)
@@ -236,11 +253,10 @@ with left:
     st.plotly_chart(fig, width="stretch", key="current_top_chart")
 
 
-
 with right:
     st.subheader(f"직전 대비 증가 TOP {top_n}")
 
-    delta_df = df.sort_values("delta_cv", ascending=False).head(top_n).copy()
+    delta_df = df.dropna(subset=["delta_cv"]).sort_values("delta_cv", ascending=False).head(top_n).copy()
     delta_df = delta_df.sort_values("delta_cv", ascending=True)
 
     fig = px.bar(
@@ -323,7 +339,7 @@ selected_uri = article_options.loc[
 history_df = load_history(selected_stat_date, selected_uri)
 
 if len(history_df) >= 2:
-    history_df["delta_cv"] = history_df["cv"].diff().fillna(0)
+    history_df["delta_cv"] = history_df["cv"].diff()
 
     fig1 = px.line(
         history_df,
@@ -339,10 +355,8 @@ if len(history_df) >= 2:
 
     st.plotly_chart(fig1, width="stretch", key="article_history_line_chart")
 
-
-
     fig2 = px.bar(
-        history_df,
+        history_df.dropna(subset=["delta_cv"]),
         x="sampled_at",
         y="delta_cv",
         labels={
@@ -353,8 +367,5 @@ if len(history_df) >= 2:
     )
 
     st.plotly_chart(fig2, width="stretch", key="article_history_delta_chart")
-
-
-
 else:
     st.info("이 기사는 아직 추이를 그릴 만큼 데이터가 충분하지 않습니다.")
