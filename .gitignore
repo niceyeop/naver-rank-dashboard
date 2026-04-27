@@ -1,0 +1,44 @@
+cat > .gitignore <<'EOF'
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Naver auth/session
+naver_cookies.txt
+naver_profile/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+naver_rank.db
+
+# Logs
+*.log
+collector.log
+dashboard.log
+nohup.out
+
+# Backups
+*_backup_*.py
+*_backup_*.db
+collect_backup_*.py
+dashboard_backup_*.py
+run_collector_loop_backup_*.py
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+EOF
