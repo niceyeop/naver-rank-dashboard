@@ -1,0 +1,16 @@
+[Unit]
+Description=Naver Rank Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/naver-rank-dashboard
+Environment=APP_DIR=/opt/naver-rank-dashboard
+Environment=APP_PORT=8501
+ExecStart=/opt/naver-rank-dashboard/deploy/run_dashboard.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
