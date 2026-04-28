@@ -62,6 +62,12 @@ def load_snapshot_times(stat_date):
 def load_snapshot(stat_date, sampled_at):
     conn = get_conn()
 
+    # 직전 대비 증가량을 안정적으로 계산하기 위해
+    # 1) 윈도우 함수의 PARTITION을 uri 기준으로만 잡고 (stat_date에 의존하지 않음)
+    # 2) WHERE 절에서 stat_date 필터를 빼서, 자정 경계나 stat_date가 달라지는
+    #    케이스에서도 같은 uri의 직전 수집 시점을 정상적으로 찾을 수 있도록 한다.
+    # 3) 마지막에 현재 sampled_at 행만 추리고, 표시용 stat_date 필터는
+    #    prev_cv 계산이 끝난 뒤에 적용한다.
     df = pd.read_sql_query("""
         WITH ranked AS (
             SELECT
@@ -87,8 +93,7 @@ def load_snapshot(stat_date, sampled_at):
                     ORDER BY sampled_at
                 ) AS prev_sampled_at
             FROM naver_pv_rank_snapshots
-            WHERE stat_date = ?
-              AND sampled_at <= ?
+            WHERE sampled_at <= ?
         )
         SELECT
             sampled_at,
@@ -104,10 +109,10 @@ def load_snapshot(stat_date, sampled_at):
             prev_rank_no,
             prev_sampled_at
         FROM ranked
-        WHERE stat_date = ?
-          AND sampled_at = ?
+        WHERE sampled_at = ?
+          AND (stat_date = ? OR stat_date IS NULL)
         ORDER BY rank_no ASC
-    """, conn, params=(stat_date, sampled_at, stat_date, sampled_at))
+    """, conn, params=(sampled_at, sampled_at, stat_date))
 
     conn.close()
     return df
@@ -203,8 +208,10 @@ if df.empty:
     st.warning("선택한 시각의 데이터가 없습니다.")
     st.stop()
 
-df["delta_cv"] = df["cv"] - df["prev_cv"]
-df["rank_change"] = df["prev_rank_no"] - df["rank_no"]
+# prev_cv가 없으면(첫 등장 기사 등) delta_cv는 NaN으로 두고,
+# 차트에서는 dropna로 걸러낸다. 단 cv 자체가 NULL인 비정상 행도 함께 걸러낸다.
+df["delta_cv"] = pd.to_numeric(df["cv"], errors="coerce") - pd.to_numeric(df["prev_cv"], errors="coerce")
+df["rank_change"] = pd.to_numeric(df["prev_rank_no"], errors="coerce") - pd.to_numeric(df["rank_no"], errors="coerce")
 
 available_prev_times = df["prev_sampled_at"].dropna().unique().tolist()
 compare_time = available_prev_times[0] if len(available_prev_times) == 1 else None
@@ -256,25 +263,35 @@ with left:
 with right:
     st.subheader(f"직전 대비 증가 TOP {top_n}")
 
-    delta_df = df.dropna(subset=["delta_cv"]).sort_values("delta_cv", ascending=False).head(top_n).copy()
+    # delta_cv가 NaN이거나 0 이하인 행은 제외하고, 양의 증가분만 표시한다.
+    # 직전 수집 데이터가 아직 없는 첫 스냅샷에서는 이 차트가 비어 있을 수 있다.
+    delta_df = df.dropna(subset=["delta_cv"]).copy()
+    delta_df = delta_df[delta_df["delta_cv"] > 0]
+    delta_df = delta_df.sort_values("delta_cv", ascending=False).head(top_n)
     delta_df = delta_df.sort_values("delta_cv", ascending=True)
 
-    fig = px.bar(
-        delta_df,
-        x="delta_cv",
-        y="title",
-        orientation="h",
-        text="delta_cv",
-        labels={
-            "delta_cv": "직전 대비 증가 조회수",
-            "title": "기사"
-        }
-    )
+    if delta_df.empty:
+        st.info(
+            "아직 직전 수집 데이터와 비교할 수 있는 증가분이 없습니다. "
+            "다음 10분 단위 수집이 끝나면 표시됩니다."
+        )
+    else:
+        fig = px.bar(
+            delta_df,
+            x="delta_cv",
+            y="title",
+            orientation="h",
+            text="delta_cv",
+            labels={
+                "delta_cv": "직전 대비 증가 조회수",
+                "title": "기사"
+            }
+        )
 
-    fig.update_traces(texttemplate="%{text:,}", textposition="outside")
-    fig.update_layout(height=max(400, top_n * 28), margin=dict(l=10, r=10, t=30, b=10))
+        fig.update_traces(texttemplate="%{text:,}", textposition="outside")
+        fig.update_layout(height=max(400, len(delta_df) * 28), margin=dict(l=10, r=10, t=30, b=10))
 
-    st.plotly_chart(fig, width="stretch", key="delta_top_chart")
+        st.plotly_chart(fig, width="stretch", key="delta_top_chart")
 
 
 st.divider()
