@@ -20,8 +20,76 @@ st.set_page_config(
     layout="wide"
 )
 
+
+def inject_custom_css():
+    st.markdown("""
+    <style>
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 1500px;
+    }
+
+    .hero-card {
+        padding: 28px 32px;
+        border-radius: 24px;
+        background:
+            radial-gradient(circle at top left, rgba(56, 189, 248, 0.25), transparent 32%),
+            linear-gradient(135deg, #0f172a 0%, #111827 50%, #020617 100%);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+        margin-bottom: 24px;
+    }
+
+    .hero-title {
+        font-size: 34px;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-bottom: 8px;
+        letter-spacing: -0.04em;
+    }
+
+    .hero-subtitle {
+        font-size: 15px;
+        color: #94a3b8;
+    }
+
+    .kpi-card {
+        padding: 22px 24px;
+        border-radius: 22px;
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.72));
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        box-shadow: 0 14px 35px rgba(0, 0, 0, 0.22);
+        min-height: 132px;
+    }
+
+    .kpi-label {
+        font-size: 14px;
+        color: #94a3b8;
+        margin-bottom: 10px;
+    }
+
+    .kpi-value {
+        font-size: 30px;
+        font-weight: 800;
+        color: #f8fafc;
+        letter-spacing: -0.04em;
+    }
+
+    .kpi-desc {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #38bdf8;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+inject_custom_css()
+
+
 refresh_count = st_autorefresh(interval=60 * 1000, key="dashboard_autorefresh")
-st.cache_data.clear()
+# st.cache_data.clear()
 
 
 def get_conn():
@@ -154,9 +222,49 @@ def format_signed_int(value):
         return "-"
     return f"{int(value):+,}"
 
+def apply_plotly_style(fig, height=420):
+    fig.update_layout(
+        template="plotly_dark",
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(15,23,42,0.35)",
+        font=dict(
+            family='-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            color="#E5E7EB",
+            size=12
+        ),
+        margin=dict(l=10, r=20, t=40, b=20),
+        xaxis=dict(
+            gridcolor="rgba(148, 163, 184, 0.12)",
+            zerolinecolor="rgba(148, 163, 184, 0.2)"
+        ),
+        yaxis=dict(
+            gridcolor="rgba(148, 163, 184, 0.08)"
+        ),
+        hoverlabel=dict(
+            bgcolor="#020617",
+            bordercolor="#38BDF8",
+            font_size=13
+        )
+    )
 
-st.title("네이버 실시간 조회수 순위")
-st.caption(f"대시보드는 60초마다 자동 새로고침됩니다. 새로고침 횟수: {refresh_count}")
+    fig.update_traces(
+        marker_line_width=0,
+        opacity=0.92
+    )
+
+    return fig
+
+
+st.markdown(f"""
+<div class="hero-card">
+    <div class="hero-title">네이버 실시간 조회수 순위</div>
+    <div class="hero-subtitle">
+        60초마다 자동 새로고침됩니다 · 새로고침 횟수 {refresh_count:,}회
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
 
 today_str = datetime.now(KST).strftime("%Y-%m-%d")
 
@@ -173,7 +281,9 @@ default_date_index = available_dates.index(today_str) if today_str in available_
 
 
 with st.sidebar:
-    st.header("설정")
+    st.header("대시보드 설정")
+
+    st.caption("조회할 날짜와 스냅샷 시각을 선택하세요.")
 
     selected_stat_date = st.selectbox(
         "조회 날짜",
@@ -189,17 +299,19 @@ with st.sidebar:
 
     sampled_times = times_df["sampled_at"].tolist()
 
-    always_latest = st.checkbox("항상 최신 데이터 보기", value=True)
+    always_latest = st.toggle("항상 최신 데이터 보기", value=True)
 
     if always_latest:
         selected_time = sampled_times[0]
-        st.caption(f"현재 최신 시각: {selected_time}")
+        st.caption(f"최신 수집 시각: `{selected_time}`")
     else:
         selected_time = st.selectbox("조회 시각", sampled_times, index=0)
 
-    top_n = st.slider("TOP N", min_value=5, max_value=100, value=20, step=5)
+    top_n = st.slider("표시할 기사 수", min_value=5, max_value=100, value=20, step=5)
 
-    st.caption(f"자동 새로고침 횟수: {refresh_count}")
+    st.divider()
+    st.caption(f"자동 새로고침 횟수: {refresh_count:,}")
+
 
 
 df = load_snapshot(selected_stat_date, selected_time)
@@ -225,12 +337,32 @@ else:
     st.caption("기사별로 가장 최근의 이전 수집 시점과 비교합니다. 이전 데이터가 없는 기사는 '-'로 표시됩니다.")
 
 
+def kpi_card(label, value, desc=None):
+    desc_html = f'<div class="kpi-desc">{desc}</div>' if desc else ""
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">{label}</div>
+        <div class="kpi-value">{value}</div>
+        {desc_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+
 col1, col2, col3, col4 = st.columns(4)
 
-col1.metric("수집 기사 수", f"{len(df):,}")
-col2.metric("1위 조회수", format_int(df.iloc[0]["cv"]))
-col3.metric("TOP 10 조회수 합계", format_int(df.head(10)["cv"].sum()))
-col4.metric("TOP 20 조회수 합계", format_int(df.head(20)["cv"].sum()))
+with col1:
+    kpi_card("수집 기사 수", f"{len(df):,}", "현재 스냅샷 기준")
+
+with col2:
+    kpi_card("1위 조회수", format_int(df.iloc[0]["cv"]), "최상위 기사")
+
+with col3:
+    kpi_card("TOP 10 조회수 합계", format_int(df.head(10)["cv"].sum()), "상위 10개 기사")
+
+with col4:
+    kpi_card("TOP 20 조회수 합계", format_int(df.head(20)["cv"].sum()), "상위 20개 기사")
+
+
 
 st.divider()
 
@@ -240,22 +372,36 @@ with left:
     st.subheader(f"현재 조회수 TOP {top_n}")
 
     chart_df = df.head(top_n).copy()
+
+    chart_df["short_title"] = chart_df["title"].apply(
+        lambda x: x if len(str(x)) <= 34 else str(x)[:34] + "..."
+    )
+
     chart_df = chart_df.sort_values("cv", ascending=True)
 
     fig = px.bar(
         chart_df,
         x="cv",
-        y="title",
+        y="short_title",
         orientation="h",
         text="cv",
+        hover_data={
+            "title": True,
+            "cv": ":,"
+        },
         labels={
             "cv": "조회수",
-            "title": "기사"
+            "short_title": "기사"
         }
     )
 
-    fig.update_traces(texttemplate="%{text:,}", textposition="outside")
-    fig.update_layout(height=max(400, top_n * 28), margin=dict(l=10, r=10, t=30, b=10))
+    fig.update_traces(
+        texttemplate="%{text:,}",
+        textposition="outside",
+        marker_color="#38BDF8"
+    )
+
+    fig = apply_plotly_style(fig, height=max(420, top_n * 30))
 
     st.plotly_chart(fig, width="stretch", key="current_top_chart")
 
@@ -263,11 +409,14 @@ with left:
 with right:
     st.subheader(f"직전 대비 증가 TOP {top_n}")
 
-    # delta_cv가 NaN이거나 0 이하인 행은 제외하고, 양의 증가분만 표시한다.
-    # 직전 수집 데이터가 아직 없는 첫 스냅샷에서는 이 차트가 비어 있을 수 있다.
     delta_df = df.dropna(subset=["delta_cv"]).copy()
     delta_df = delta_df[delta_df["delta_cv"] > 0]
     delta_df = delta_df.sort_values("delta_cv", ascending=False).head(top_n)
+
+    delta_df["short_title"] = delta_df["title"].apply(
+        lambda x: x if len(str(x)) <= 34 else str(x)[:34] + "..."
+    )
+
     delta_df = delta_df.sort_values("delta_cv", ascending=True)
 
     if delta_df.empty:
@@ -279,19 +428,30 @@ with right:
         fig = px.bar(
             delta_df,
             x="delta_cv",
-            y="title",
+            y="short_title",
             orientation="h",
             text="delta_cv",
+            hover_data={
+                "title": True,
+                "delta_cv": ":,"
+            },
             labels={
                 "delta_cv": "직전 대비 증가 조회수",
-                "title": "기사"
+                "short_title": "기사"
             }
         )
 
-        fig.update_traces(texttemplate="%{text:,}", textposition="outside")
-        fig.update_layout(height=max(400, len(delta_df) * 28), margin=dict(l=10, r=10, t=30, b=10))
+        fig.update_traces(
+            texttemplate="%{text:,}",
+            textposition="outside",
+            marker_color="#22C55E"
+        )
+
+        fig = apply_plotly_style(fig, height=max(420, len(delta_df) * 30))
 
         st.plotly_chart(fig, width="stretch", key="delta_top_chart")
+
+
 
 
 st.divider()
@@ -370,6 +530,13 @@ if len(history_df) >= 2:
         title="누적 조회수 추이"
     )
 
+    fig1.update_traces(
+        line=dict(color="#38BDF8", width=3),
+        marker=dict(size=7, color="#38BDF8")
+    )
+
+    fig1 = apply_plotly_style(fig1, height=430)
+
     st.plotly_chart(fig1, width="stretch", key="article_history_line_chart")
 
     fig2 = px.bar(
@@ -383,6 +550,16 @@ if len(history_df) >= 2:
         title="직전 대비 증가량"
     )
 
+    fig2.update_traces(
+        marker_color="#A78BFA"
+    )
+
+    fig2 = apply_plotly_style(fig2, height=380)
+
     st.plotly_chart(fig2, width="stretch", key="article_history_delta_chart")
+
 else:
     st.info("이 기사는 아직 추이를 그릴 만큼 데이터가 충분하지 않습니다.")
+
+
+

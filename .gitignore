@@ -42,3 +42,9 @@ run_collector_loop_backup_*.py
 .vscode/
 .idea/
 EOF
+
+# Probe result files
+naver_refresh_probe.csv
+probe_refresh.log
+probe_naver_refresh_backup_*.py
+EOF
