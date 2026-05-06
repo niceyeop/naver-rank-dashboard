@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,26 +36,24 @@ def next_10min_slot(slot):
     return slot + timedelta(minutes=10)
 
 
-def next_collect_time():
+def next_collect_schedule():
     """
-    다음 수집 예정 시각을 계산합니다.
+    다음 수집 대상 슬롯과 실제 실행 예정 시각을 함께 계산합니다.
 
     핵심:
-    - 각 10분 슬롯 시작 후 COLLECTION_DELAY_SECONDS 초 뒤에 수집합니다.
-    - 예: 17:40 슬롯은 17:49:10에 수집
-    - 만약 현재 시간이 아직 17:49:10 전이면 17:49:10을 목표로 합니다.
-    - 이미 지났으면 다음 슬롯의 수집 시각으로 넘어갑니다.
+    - sampled_at에는 실행 시각이 아니라 수집 대상 10분 슬롯을 저장합니다.
+    - 실행이 몇 초 늦어져도 같은 슬롯으로 저장되어 직전 대비 계산이 흔들리지 않습니다.
     """
     now = datetime.now(KST)
 
     slot = current_10min_slot(now)
     target = slot + timedelta(seconds=COLLECTION_DELAY_SECONDS)
 
-    if now < target:
-        return target
+    if now >= target:
+        slot = next_10min_slot(slot)
+        target = slot + timedelta(seconds=COLLECTION_DELAY_SECONDS)
 
-    next_slot = next_10min_slot(slot)
-    return next_slot + timedelta(seconds=COLLECTION_DELAY_SECONDS)
+    return slot, target
 
 
 def sleep_until(target):
@@ -68,12 +67,13 @@ def sleep_until(target):
         time.sleep(min(remaining, 30))
 
 
-def run_collect():
+def run_collect(sampled_at):
     started_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[START] collect.py 실행: {started_at}", flush=True)
+    sampled_at_text = sampled_at.strftime("%Y-%m-%dT%H:%M:%S")
+    print(f"[START] collect.py 실행: {started_at}, sampled_at={sampled_at_text}", flush=True)
 
     result = subprocess.run(
-        ["python3", "collect.py"],
+        [sys.executable, "collect.py", "--sampled-at", sampled_at_text],
         cwd=str(PROJECT_DIR),
         capture_output=True,
         text=True,
@@ -102,14 +102,15 @@ def main():
     print(f"[INFO] 프로젝트 경로: {PROJECT_DIR}", flush=True)
 
     while True:
-        target = next_collect_time()
+        slot, target = next_collect_schedule()
         print(
-            f"[WAIT] 다음 수집 예정 시각: {target.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"[WAIT] 다음 수집 대상 슬롯: {slot.strftime('%Y-%m-%d %H:%M:%S')}, "
+            f"실행 예정 시각: {target.strftime('%Y-%m-%d %H:%M:%S')}",
             flush=True,
         )
 
         sleep_until(target)
-        run_collect()
+        run_collect(slot)
 
 
 if __name__ == "__main__":
