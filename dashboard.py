@@ -127,6 +127,26 @@ def load_snapshot_times(stat_date):
 
 
 @st.cache_data(ttl=30)
+def load_previous_time(stat_date, sampled_at):
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT sampled_at
+        FROM naver_pv_rank_snapshots
+        WHERE stat_date = ?
+          AND sampled_at < ?
+        GROUP BY sampled_at
+        ORDER BY sampled_at DESC
+        LIMIT 1
+    """, conn, params=(stat_date, sampled_at))
+    conn.close()
+
+    if df.empty:
+        return None
+
+    return df.iloc[0]["sampled_at"]
+
+
+@st.cache_data(ttl=30)
 def load_snapshot(stat_date, sampled_at):
     conn = get_conn()
 
@@ -313,28 +333,56 @@ with st.sidebar:
     st.caption(f"자동 새로고침 횟수: {refresh_count:,}")
 
 
-
 df = load_snapshot(selected_stat_date, selected_time)
 
-if df.empty:
-    st.warning("선택한 시각의 데이터가 없습니다.")
-    st.stop()
+# 현재 선택 시각보다 이전인 가장 가까운 수집 시각을 DB에서 직접 찾습니다.
+compare_time = load_previous_time(selected_stat_date, selected_time)
 
-# prev_cv가 없으면(첫 등장 기사 등) delta_cv는 NaN으로 두고,
-# 차트에서는 dropna로 걸러낸다. 단 cv 자체가 NULL인 비정상 행도 함께 걸러낸다.
-df["delta_cv"] = pd.to_numeric(df["cv"], errors="coerce") - pd.to_numeric(df["prev_cv"], errors="coerce")
-df["rank_change"] = pd.to_numeric(df["prev_rank_no"], errors="coerce") - pd.to_numeric(df["rank_no"], errors="coerce")
+if compare_time:
+    prev_df = load_snapshot(selected_stat_date, compare_time)
 
-available_prev_times = df["prev_sampled_at"].dropna().unique().tolist()
-compare_time = available_prev_times[0] if len(available_prev_times) == 1 else None
+    # load_snapshot()이 이미 prev_cv 같은 컬럼을 들고 올 수 있으므로,
+    # 비교용으로 필요한 컬럼만 사용합니다.
+    prev_cols = ["uri", "cv"]
+
+    if "rank_no" in prev_df.columns:
+        prev_cols.append("rank_no")
+
+    prev_df = prev_df[prev_cols].copy()
+    prev_df = prev_df.rename(columns={
+        "cv": "prev_cv",
+        "rank_no": "prev_rank_no",
+    })
+
+    # 혹시 기존 df에 prev_cv, prev_rank_no가 이미 있으면 제거하고 새로 계산합니다.
+    for col in ["prev_cv", "prev_rank_no", "prev_sampled_at", "delta_cv", "rank_change"]:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
+    df = df.merge(prev_df, on="uri", how="left")
+
+    df["cv"] = pd.to_numeric(df["cv"], errors="coerce")
+    df["prev_cv"] = pd.to_numeric(df["prev_cv"], errors="coerce")
+    df["delta_cv"] = df["cv"] - df["prev_cv"]
+
+    if "rank_no" in df.columns and "prev_rank_no" in df.columns:
+        df["rank_no"] = pd.to_numeric(df["rank_no"], errors="coerce")
+        df["prev_rank_no"] = pd.to_numeric(df["prev_rank_no"], errors="coerce")
+        df["rank_change"] = df["prev_rank_no"] - df["rank_no"]
+else:
+    df["prev_cv"] = pd.NA
+    df["delta_cv"] = pd.NA
+    df["rank_change"] = pd.NA
+
+
 
 st.caption(f"조회 날짜: {selected_stat_date}")
 st.caption(f"현재 선택 시각: {selected_time}")
 
 if compare_time:
-    st.caption(f"대표 비교 기준 시각: {compare_time}")
+    st.caption(f"비교 기준 시각: {compare_time}")
 else:
-    st.caption("기사별로 가장 최근의 이전 수집 시점과 비교합니다. 이전 데이터가 없는 기사는 '-'로 표시됩니다.")
+    st.caption("비교 기준 시각: 없음")
 
 
 def kpi_card(label, value, desc=None):
@@ -420,10 +468,14 @@ with right:
     delta_df = delta_df.sort_values("delta_cv", ascending=True)
 
     if delta_df.empty:
-        st.info(
-            "아직 직전 수집 데이터와 비교할 수 있는 증가분이 없습니다. "
-            "다음 10분 단위 수집이 끝나면 표시됩니다."
-        )
+       st.info(
+           "아직 직전 수집 데이터와 비교할 수 있는 증가분이 없습니다. "
+           "현재 선택 시각보다 이전 수집 데이터가 없거나, 증가한 기사가 없습니다."
+    )
+       st.caption(f"현재 선택 시각: {selected_time}")
+       st.caption(f"비교 기준 시각: {compare_time}")
+
+
     else:
         fig = px.bar(
             delta_df,
