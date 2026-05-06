@@ -87,9 +87,7 @@ def inject_custom_css():
 
 inject_custom_css()
 
-
 refresh_count = st_autorefresh(interval=60 * 1000, key="dashboard_autorefresh")
-# st.cache_data.clear()
 
 
 def get_conn():
@@ -99,14 +97,12 @@ def get_conn():
 @st.cache_data(ttl=30)
 def load_stat_dates():
     conn = get_conn()
-
     df = pd.read_sql_query("""
         SELECT DISTINCT stat_date
         FROM naver_pv_rank_snapshots
         WHERE stat_date IS NOT NULL
         ORDER BY stat_date DESC
     """, conn)
-
     conn.close()
     return df
 
@@ -114,30 +110,27 @@ def load_stat_dates():
 @st.cache_data(ttl=30)
 def load_snapshot_times(stat_date):
     conn = get_conn()
-
     df = pd.read_sql_query("""
         SELECT DISTINCT sampled_at
         FROM naver_pv_rank_snapshots
         WHERE stat_date = ?
         ORDER BY sampled_at DESC
     """, conn, params=(stat_date,))
-
     conn.close()
     return df
 
 
 @st.cache_data(ttl=30)
-def load_previous_time(stat_date, sampled_at):
+def load_previous_time(sampled_at):
     conn = get_conn()
     df = pd.read_sql_query("""
         SELECT sampled_at
         FROM naver_pv_rank_snapshots
-        WHERE stat_date = ?
-          AND sampled_at < ?
+        WHERE sampled_at < ?
         GROUP BY sampled_at
         ORDER BY sampled_at DESC
         LIMIT 1
-    """, conn, params=(stat_date, sampled_at))
+    """, conn, params=(sampled_at,))
     conn.close()
 
     if df.empty:
@@ -149,40 +142,7 @@ def load_previous_time(stat_date, sampled_at):
 @st.cache_data(ttl=30)
 def load_snapshot(stat_date, sampled_at):
     conn = get_conn()
-
-    # 직전 대비 증가량을 안정적으로 계산하기 위해
-    # 1) 윈도우 함수의 PARTITION을 uri 기준으로만 잡고 (stat_date에 의존하지 않음)
-    # 2) WHERE 절에서 stat_date 필터를 빼서, 자정 경계나 stat_date가 달라지는
-    #    케이스에서도 같은 uri의 직전 수집 시점을 정상적으로 찾을 수 있도록 한다.
-    # 3) 마지막에 현재 sampled_at 행만 추리고, 표시용 stat_date 필터는
-    #    prev_cv 계산이 끝난 뒤에 적용한다.
     df = pd.read_sql_query("""
-        WITH ranked AS (
-            SELECT
-                sampled_at,
-                stat_date,
-                rank_no,
-                uri,
-                title,
-                reporter,
-                cv,
-                cv_p,
-                create_date,
-                LAG(cv) OVER (
-                    PARTITION BY uri
-                    ORDER BY sampled_at
-                ) AS prev_cv,
-                LAG(rank_no) OVER (
-                    PARTITION BY uri
-                    ORDER BY sampled_at
-                ) AS prev_rank_no,
-                LAG(sampled_at) OVER (
-                    PARTITION BY uri
-                    ORDER BY sampled_at
-                ) AS prev_sampled_at
-            FROM naver_pv_rank_snapshots
-            WHERE sampled_at <= ?
-        )
         SELECT
             sampled_at,
             stat_date,
@@ -192,16 +152,34 @@ def load_snapshot(stat_date, sampled_at):
             reporter,
             cv,
             cv_p,
-            create_date,
-            prev_cv,
-            prev_rank_no,
-            prev_sampled_at
-        FROM ranked
+            create_date
+        FROM naver_pv_rank_snapshots
         WHERE sampled_at = ?
           AND (stat_date = ? OR stat_date IS NULL)
         ORDER BY rank_no ASC
-    """, conn, params=(sampled_at, sampled_at, stat_date))
+    """, conn, params=(sampled_at, stat_date))
+    conn.close()
+    return df
 
+
+@st.cache_data(ttl=30)
+def load_snapshot_by_time(sampled_at):
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT
+            sampled_at,
+            stat_date,
+            rank_no,
+            uri,
+            title,
+            reporter,
+            cv,
+            cv_p,
+            create_date
+        FROM naver_pv_rank_snapshots
+        WHERE sampled_at = ?
+        ORDER BY rank_no ASC
+    """, conn, params=(sampled_at,))
     conn.close()
     return df
 
@@ -209,7 +187,6 @@ def load_snapshot(stat_date, sampled_at):
 @st.cache_data(ttl=30)
 def load_history(stat_date, uri):
     conn = get_conn()
-
     df = pd.read_sql_query("""
         SELECT
             sampled_at,
@@ -226,7 +203,6 @@ def load_history(stat_date, uri):
           AND uri = ?
         ORDER BY sampled_at ASC
     """, conn, params=(stat_date, uri))
-
     conn.close()
     return df
 
@@ -241,6 +217,16 @@ def format_signed_int(value):
     if pd.isna(value):
         return "-"
     return f"{int(value):+,}"
+
+
+def compare_gap_minutes(selected_time, compare_time):
+    if not compare_time:
+        return None
+
+    selected_dt = pd.to_datetime(selected_time)
+    compare_dt = pd.to_datetime(compare_time)
+    return int((selected_dt - compare_dt).total_seconds() // 60)
+
 
 def apply_plotly_style(fig, height=420):
     fig.update_layout(
@@ -276,6 +262,17 @@ def apply_plotly_style(fig, height=420):
     return fig
 
 
+def kpi_card(label, value, desc=None):
+    desc_html = f'<div class="kpi-desc">{desc}</div>' if desc else ""
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">{label}</div>
+        <div class="kpi-value">{value}</div>
+        {desc_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+
 st.markdown(f"""
 <div class="hero-card">
     <div class="hero-title">네이버 실시간 조회수 순위</div>
@@ -287,7 +284,6 @@ st.markdown(f"""
 
 
 today_str = datetime.now(KST).strftime("%Y-%m-%d")
-
 dates_df = load_stat_dates()
 
 if dates_df.empty:
@@ -295,14 +291,10 @@ if dates_df.empty:
     st.stop()
 
 available_dates = dates_df["stat_date"].tolist()
-
-# 오늘 데이터가 있으면 오늘을 기본 선택, 없으면 가장 최근 날짜 선택
 default_date_index = available_dates.index(today_str) if today_str in available_dates else 0
-
 
 with st.sidebar:
     st.header("대시보드 설정")
-
     st.caption("조회할 날짜와 스냅샷 시각을 선택하세요.")
 
     selected_stat_date = st.selectbox(
@@ -318,7 +310,6 @@ with st.sidebar:
         st.stop()
 
     sampled_times = times_df["sampled_at"].tolist()
-
     always_latest = st.toggle("항상 최신 데이터 보기", value=True)
 
     if always_latest:
@@ -335,66 +326,47 @@ with st.sidebar:
 
 df = load_snapshot(selected_stat_date, selected_time)
 
-# 현재 선택 시각보다 이전인 가장 가까운 수집 시각을 DB에서 직접 찾습니다.
-compare_time = load_previous_time(selected_stat_date, selected_time)
+if df.empty:
+    st.warning("선택한 시각의 스냅샷 데이터가 없습니다.")
+    st.stop()
+
+compare_time = load_previous_time(selected_time)
 
 if compare_time:
-    prev_df = load_snapshot(selected_stat_date, compare_time)
-
-    # load_snapshot()이 이미 prev_cv 같은 컬럼을 들고 올 수 있으므로,
-    # 비교용으로 필요한 컬럼만 사용합니다.
-    prev_cols = ["uri", "cv"]
-
-    if "rank_no" in prev_df.columns:
-        prev_cols.append("rank_no")
-
-    prev_df = prev_df[prev_cols].copy()
+    prev_df = load_snapshot_by_time(compare_time)
+    prev_df = prev_df[["uri", "cv", "rank_no"]].copy()
     prev_df = prev_df.rename(columns={
         "cv": "prev_cv",
         "rank_no": "prev_rank_no",
     })
 
-    # 혹시 기존 df에 prev_cv, prev_rank_no가 이미 있으면 제거하고 새로 계산합니다.
-    for col in ["prev_cv", "prev_rank_no", "prev_sampled_at", "delta_cv", "rank_change"]:
-        if col in df.columns:
-            df = df.drop(columns=[col])
-
     df = df.merge(prev_df, on="uri", how="left")
-
-    df["cv"] = pd.to_numeric(df["cv"], errors="coerce")
-    df["prev_cv"] = pd.to_numeric(df["prev_cv"], errors="coerce")
-    df["delta_cv"] = df["cv"] - df["prev_cv"]
-
-    if "rank_no" in df.columns and "prev_rank_no" in df.columns:
-        df["rank_no"] = pd.to_numeric(df["rank_no"], errors="coerce")
-        df["prev_rank_no"] = pd.to_numeric(df["prev_rank_no"], errors="coerce")
-        df["rank_change"] = df["prev_rank_no"] - df["rank_no"]
 else:
     df["prev_cv"] = pd.NA
-    df["delta_cv"] = pd.NA
-    df["rank_change"] = pd.NA
+    df["prev_rank_no"] = pd.NA
 
+df["cv"] = pd.to_numeric(df["cv"], errors="coerce")
+df["prev_cv"] = pd.to_numeric(df["prev_cv"], errors="coerce")
+df["delta_cv"] = df["cv"] - df["prev_cv"]
 
+df["rank_no"] = pd.to_numeric(df["rank_no"], errors="coerce")
+df["prev_rank_no"] = pd.to_numeric(df["prev_rank_no"], errors="coerce")
+df["rank_change"] = df["prev_rank_no"] - df["rank_no"]
 
 st.caption(f"조회 날짜: {selected_stat_date}")
 st.caption(f"현재 선택 시각: {selected_time}")
 
 if compare_time:
+    gap_minutes = compare_gap_minutes(selected_time, compare_time)
     st.caption(f"비교 기준 시각: {compare_time}")
+
+    if gap_minutes and gap_minutes > 10:
+        st.warning(
+            f"직전 저장 스냅샷과 {gap_minutes}분 차이가 납니다. "
+            "중간 수집분이 누락되었을 수 있어 증가량은 해당 간격 전체 기준입니다."
+        )
 else:
     st.caption("비교 기준 시각: 없음")
-
-
-def kpi_card(label, value, desc=None):
-    desc_html = f'<div class="kpi-desc">{desc}</div>' if desc else ""
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
-        {desc_html}
-    </div>
-    """, unsafe_allow_html=True)
-
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -410,8 +382,6 @@ with col3:
 with col4:
     kpi_card("TOP 20 조회수 합계", format_int(df.head(20)["cv"].sum()), "상위 20개 기사")
 
-
-
 st.divider()
 
 left, right = st.columns(2)
@@ -420,11 +390,9 @@ with left:
     st.subheader(f"현재 조회수 TOP {top_n}")
 
     chart_df = df.head(top_n).copy()
-
-    chart_df["short_title"] = chart_df["title"].apply(
+    chart_df["short_title"] = chart_df["title"].fillna("(제목 없음)").apply(
         lambda x: x if len(str(x)) <= 34 else str(x)[:34] + "..."
     )
-
     chart_df = chart_df.sort_values("cv", ascending=True)
 
     fig = px.bar(
@@ -450,9 +418,7 @@ with left:
     )
 
     fig = apply_plotly_style(fig, height=max(420, top_n * 30))
-
     st.plotly_chart(fig, width="stretch", key="current_top_chart")
-
 
 with right:
     st.subheader(f"직전 대비 증가 TOP {top_n}")
@@ -460,22 +426,18 @@ with right:
     delta_df = df.dropna(subset=["delta_cv"]).copy()
     delta_df = delta_df[delta_df["delta_cv"] > 0]
     delta_df = delta_df.sort_values("delta_cv", ascending=False).head(top_n)
-
-    delta_df["short_title"] = delta_df["title"].apply(
+    delta_df["short_title"] = delta_df["title"].fillna("(제목 없음)").apply(
         lambda x: x if len(str(x)) <= 34 else str(x)[:34] + "..."
     )
-
     delta_df = delta_df.sort_values("delta_cv", ascending=True)
 
     if delta_df.empty:
        st.info(
            "아직 직전 수집 데이터와 비교할 수 있는 증가분이 없습니다. "
            "현재 선택 시각보다 이전 수집 데이터가 없거나, 증가한 기사가 없습니다."
-    )
+       )
        st.caption(f"현재 선택 시각: {selected_time}")
        st.caption(f"비교 기준 시각: {compare_time}")
-
-
     else:
         fig = px.bar(
             delta_df,
@@ -500,18 +462,13 @@ with right:
         )
 
         fig = apply_plotly_style(fig, height=max(420, len(delta_df) * 30))
-
         st.plotly_chart(fig, width="stretch", key="delta_top_chart")
-
-
-
 
 st.divider()
 
 st.subheader("실시간 순위표")
 
 display_df = df.copy()
-
 display_df["조회수"] = display_df["cv"].apply(format_int)
 display_df["직전 대비"] = display_df["delta_cv"].apply(format_signed_int)
 display_df["순위 변동"] = display_df["rank_change"].apply(format_signed_int)
@@ -537,7 +494,6 @@ display_df = display_df.rename(columns={
     "uri": "URL"
 })
 
-
 st.dataframe(
     display_df,
     width="stretch",
@@ -547,12 +503,13 @@ st.dataframe(
     }
 )
 
-
 st.divider()
 
 st.subheader("기사별 조회수 추이")
 
 article_options = df[["title", "uri"]].copy()
+article_options["title"] = article_options["title"].fillna("(제목 없음)")
+article_options["uri"] = article_options["uri"].fillna("")
 article_options["label"] = article_options["title"] + " | " + article_options["uri"]
 
 selected_article_label = st.selectbox(
@@ -588,7 +545,6 @@ if len(history_df) >= 2:
     )
 
     fig1 = apply_plotly_style(fig1, height=430)
-
     st.plotly_chart(fig1, width="stretch", key="article_history_line_chart")
 
     fig2 = px.bar(
@@ -607,11 +563,6 @@ if len(history_df) >= 2:
     )
 
     fig2 = apply_plotly_style(fig2, height=380)
-
     st.plotly_chart(fig2, width="stretch", key="article_history_delta_chart")
-
 else:
     st.info("이 기사는 아직 추이를 그릴 만큼 데이터가 충분하지 않습니다.")
-
-
-
