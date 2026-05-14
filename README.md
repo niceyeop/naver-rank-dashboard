@@ -36,3 +36,41 @@ naver-rank-dashboard/
 ├── collector.log             # 수집기 로그
 ├── dashboard.log             # 대시보드 로그
 └── README.md                 # 설명 문서
+```
+
+---
+
+## 3. GitHub 자동 배포 (네이버클라우드)
+
+`main` 브랜치에 코드가 푸시되면 GitHub Actions가 네이버클라우드 서버에 SSH로 접속해 자동 배포를 수행합니다.
+
+### 3-1. 워크플로 파일
+
+- `.github/workflows/deploy_ncloud.yml`
+
+### 3-2. GitHub Secrets 설정
+
+저장소 `Settings > Secrets and variables > Actions`에 아래 값을 등록하세요.
+
+- `NCLOUD_HOST`: 네이버클라우드 서버 IP 또는 도메인
+- `NCLOUD_USER`: SSH 로그인 사용자
+- `NCLOUD_SSH_KEY`: 배포용 개인키(멀티라인 전체)
+- `NCLOUD_PORT`: SSH 포트(일반적으로 `22`)
+- `NCLOUD_APP_DIR`: 서버의 프로젝트 경로 (예: `/home/ubuntu/naver-rank-dashboard`)
+
+### 3-3. 서버 선행 조건
+
+- `NCLOUD_APP_DIR` 경로에 이미 git clone 되어 있어야 함
+- 서버에서 `python3`, `pip`, `systemd`, `git` 사용 가능해야 함
+- 아래 서비스명이 존재해야 함
+  - `naver-rank-dashboard.service`
+  - `naver-rank-collector.service`
+- 배포 사용자에게 `sudo systemctl restart ...` 권한이 있어야 함
+
+### 3-4. 배포 시 수행 작업
+
+1. 서버 접속
+2. `main` 최신 코드 가져오기
+3. `requirements.txt` 재설치
+4. 대시보드/수집기 서비스 재시작
+5. 서비스 active 상태 검증
