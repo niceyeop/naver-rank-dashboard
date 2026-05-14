@@ -57,20 +57,21 @@ naver-rank-dashboard/
 - `NCLOUD_SSH_KEY`: 배포용 개인키(멀티라인 전체)
 - `NCLOUD_PORT`: SSH 포트(일반적으로 `22`)
 - `NCLOUD_APP_DIR`: 서버의 프로젝트 경로 (예: `/home/ubuntu/naver-rank-dashboard`)
+- `NCLOUD_DEPLOY_BRANCH`: 배포할 브랜치명 (미입력 시 `main`)
+- `NCLOUD_DASHBOARD_SERVICE`: 대시보드 서비스명 (예: `naver-rank-dashboard.service`)
+- `NCLOUD_COLLECTOR_SERVICE`: 수집기 서비스명 (예: `naver-rank-collector.service`)
 
 ### 3-3. 서버 선행 조건
 
 - `NCLOUD_APP_DIR` 경로에 이미 git clone 되어 있어야 함
 - 서버에서 `python3`, `pip`, `systemd`, `git` 사용 가능해야 함
-- 아래 서비스명이 존재해야 함
-  - `naver-rank-dashboard.service`
-  - `naver-rank-collector.service`
+- `NCLOUD_DASHBOARD_SERVICE`, `NCLOUD_COLLECTOR_SERVICE`에 입력한 서비스명이 실제로 존재해야 함
 - 배포 사용자에게 `sudo systemctl restart ...` 권한이 있어야 함
 
 ### 3-4. 배포 시 수행 작업
 
 1. 서버 접속
-2. `main` 최신 코드 가져오기
+2. 지정 브랜치 최신 코드 가져오기
 3. `requirements.txt` 재설치
 4. 대시보드/수집기 서비스 재시작
 5. 서비스 active 상태 검증
