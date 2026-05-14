@@ -27,7 +27,19 @@ jobs:
             set -e
 
             APP_DIR="${{ secrets.NCLOUD_APP_DIR }}"
-            BRANCH="main"
+            BRANCH="${{ secrets.NCLOUD_DEPLOY_BRANCH }}"
+            DASHBOARD_SERVICE="${{ secrets.NCLOUD_DASHBOARD_SERVICE }}"
+            COLLECTOR_SERVICE="${{ secrets.NCLOUD_COLLECTOR_SERVICE }}"
+
+            if [ -z "$BRANCH" ]; then
+              BRANCH="main"
+            fi
+
+            if [ -z "$DASHBOARD_SERVICE" ] || [ -z "$COLLECTOR_SERVICE" ]; then
+              echo "[ERROR] Service secrets are missing."
+              echo "Set NCLOUD_DASHBOARD_SERVICE and NCLOUD_COLLECTOR_SERVICE"
+              exit 1
+            fi
 
             if [ ! -d "$APP_DIR/.git" ]; then
               echo "[ERROR] APP_DIR is not a git repository: $APP_DIR"
@@ -45,10 +57,10 @@ jobs:
               python3 -m pip install -r requirements.txt
             fi
 
-            sudo systemctl restart naver-rank-dashboard.service
-            sudo systemctl restart naver-rank-collector.service
+            sudo systemctl restart "$DASHBOARD_SERVICE"
+            sudo systemctl restart "$COLLECTOR_SERVICE"
 
-            sudo systemctl is-active --quiet naver-rank-dashboard.service
-            sudo systemctl is-active --quiet naver-rank-collector.service
+            sudo systemctl is-active --quiet "$DASHBOARD_SERVICE"
+            sudo systemctl is-active --quiet "$COLLECTOR_SERVICE"
 
             echo "[OK] Deploy and restart completed."
