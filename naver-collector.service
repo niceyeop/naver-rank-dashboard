@@ -1,0 +1,17 @@
+[Unit]
+Description=Naver Rank Collector Loop
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/naver-rank-dashboard
+EnvironmentFile=/opt/naver-rank-dashboard/.env
+ExecStart=/opt/naver-rank-dashboard/venv/bin/python run_collector_loop.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
