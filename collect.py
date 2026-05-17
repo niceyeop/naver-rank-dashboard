@@ -25,7 +25,17 @@ NAVER_COOKIE = os.getenv("NAVER_COOKIE", "")
 NAVER_BODY = os.getenv("NAVER_BODY", "")
 COOKIE_JAR_PATH = os.getenv("COOKIE_JAR_PATH", "naver_cookies.txt")
 
+DB_TIMEOUT_SECONDS = 30
+DB_BUSY_TIMEOUT_MS = 30_000
 KST = ZoneInfo("Asia/Seoul")
+
+
+def connect_db():
+    conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS)
+    conn.execute(f"PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
 
 def current_10min_slot_iso():
     now = datetime.now(KST)
@@ -54,7 +64,7 @@ def now_iso():
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cur = conn.cursor()
 
     cur.execute("""
@@ -83,7 +93,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_rank_uri_sampled_at
         ON naver_pv_rank_snapshots(uri, sampled_at)
     """)
-
 
     conn.commit()
     conn.close()
@@ -124,21 +133,15 @@ def columnar_to_rows(data):
     return result
 
 
-def build_cookie_session():
-    session = requests.Session()
+def save_cookie_jar(cookie_jar):
+    cookie_dir = os.path.dirname(COOKIE_JAR_PATH)
+    if cookie_dir:
+        os.makedirs(cookie_dir, exist_ok=True)
 
-    cookie_jar = MozillaCookieJar(COOKIE_JAR_PATH)
+    cookie_jar.save(ignore_discard=True, ignore_expires=True)
 
-    # 1. 기존 쿠키 파일이 있으면 우선 사용
-    if os.path.exists(COOKIE_JAR_PATH):
-        try:
-            cookie_jar.load(ignore_discard=True, ignore_expires=True)
-            session.cookies = cookie_jar
-            return session, cookie_jar
-        except Exception as e:
-            print(f"[WARN] 쿠키 파일 로드 실패. .env 쿠키를 사용합니다: {e}")
 
-    # 2. 쿠키 파일이 없으면 .env의 NAVER_COOKIE로 초기화
+def seed_cookie_jar_from_env(cookie_jar):
     if not NAVER_COOKIE:
         raise RuntimeError(
             "쿠키 파일도 없고 NAVER_COOKIE도 없습니다. "
@@ -156,6 +159,8 @@ def build_cookie_session():
     simple_cookie = SimpleCookie()
     simple_cookie.load(NAVER_COOKIE)
 
+    cookie_jar.clear()
+
     for name, morsel in simple_cookie.items():
         cookie = create_cookie(
             name=name,
@@ -165,12 +170,25 @@ def build_cookie_session():
         )
         cookie_jar.set_cookie(cookie)
 
+    save_cookie_jar(cookie_jar)
+
+
+def build_cookie_session(force_env_cookie=False):
+    session = requests.Session()
+    cookie_jar = MozillaCookieJar(COOKIE_JAR_PATH)
+
+    if not force_env_cookie and os.path.exists(COOKIE_JAR_PATH):
+        try:
+            cookie_jar.load(ignore_discard=True, ignore_expires=True)
+            session.cookies = cookie_jar
+            return session, cookie_jar
+        except Exception as e:
+            print(f"[WARN] 쿠키 파일 로드 실패. .env 쿠키를 사용합니다: {e}")
+
+    seed_cookie_jar_from_env(cookie_jar)
     session.cookies = cookie_jar
 
-    cookie_jar.save(ignore_discard=True, ignore_expires=True)
-
     return session, cookie_jar
-
 
 
 def load_stats_from_file(file_path):
@@ -184,8 +202,6 @@ def extract_pv_rank(response_json, sampled_at=None):
 
     for stat in stat_data_list:
         if stat.get("dataId") == "pvRank":
-            # 네이버 API utime을 그대로 쓰지 않고,
-            # 우리가 수집한 시각을 10분 단위로 정렬해서 저장
             normalized_sampled_at = normalize_sampled_at(sampled_at)
 
             data = stat.get("data", {})
@@ -195,9 +211,8 @@ def extract_pv_rank(response_json, sampled_at=None):
     raise RuntimeError("응답에서 dataId=pvRank를 찾지 못했습니다.")
 
 
-
 def save_pv_rank(sampled_at, rows):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cur = conn.cursor()
 
     saved_count = 0
@@ -249,9 +264,6 @@ def save_pv_rank(sampled_at, rows):
     return saved_count
 
 
-KST = ZoneInfo("Asia/Seoul")
-
-
 def today_kst_date():
     """
     한국 시간 기준 오늘 날짜를 YYYY-MM-DD 형식으로 반환합니다.
@@ -288,6 +300,26 @@ def apply_today_to_body(value):
 
     return value
 
+
+def build_request_body():
+    if not NAVER_BODY.strip():
+        return None
+
+    try:
+        body = json.loads(NAVER_BODY)
+    except json.JSONDecodeError:
+        raise RuntimeError("NAVER_BODY가 JSON 형식이 아닙니다.")
+
+    return apply_today_to_body(body)
+
+
+def request_stats(session, request_url, headers, method, body):
+    if method == "POST":
+        return session.post(request_url, headers=headers, json=body, timeout=30)
+
+    return session.get(request_url, headers=headers, timeout=30)
+
+
 def fetch_stats_from_api():
     if not NAVER_STATS_URL:
         raise RuntimeError(".env에 NAVER_STATS_URL이 없습니다.")
@@ -302,33 +334,22 @@ def fetch_stats_from_api():
     if NAVER_REFERER:
         headers["Referer"] = NAVER_REFERER
 
-    session, cookie_jar = build_cookie_session()
-
     method = (NAVER_METHOD or "GET").upper()
+    body = build_request_body() if method == "POST" else None
+    session, cookie_jar = build_cookie_session()
 
     print(f"[INFO] 요청 방식: {method}")
     print(f"[INFO] 요청 날짜: {today_kst_date()}")
 
+    response = request_stats(session, request_url, headers, method, body)
 
-    if NAVER_METHOD == "POST":
-        body = None
-
-        if NAVER_BODY.strip():
-            try:
-                body = json.loads(NAVER_BODY)
-            except json.JSONDecodeError:
-                raise RuntimeError("NAVER_BODY가 JSON 형식이 아닙니다.")
-
-        body = apply_today_to_body(body)
-
-        response = session.post(request_url, headers=headers, json=body, timeout=30)
-
-
-    else:
-        response = session.get(request_url, headers=headers, timeout=30)
+    if response.status_code in [401, 403] and NAVER_COOKIE and os.path.exists(COOKIE_JAR_PATH):
+        print("[WARN] 저장된 쿠키 인증 실패. .env의 NAVER_COOKIE로 재시도합니다.")
+        session, cookie_jar = build_cookie_session(force_env_cookie=True)
+        response = request_stats(session, request_url, headers, method, body)
 
     try:
-        cookie_jar.save(ignore_discard=True, ignore_expires=True)
+        save_cookie_jar(cookie_jar)
     except Exception as e:
         print(f"[WARN] 쿠키 저장 실패: {e}")
 
