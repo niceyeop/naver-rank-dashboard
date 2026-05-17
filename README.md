@@ -35,6 +35,12 @@ naver-rank-dashboard/
 ├── naver_cookies.txt         # 자동 저장되는 쿠키 파일
 ├── collector.log             # 수집기 로그
 ├── dashboard.log             # 대시보드 로그
+├── deploy/
+│   └── gce/
+│       ├── README.md
+│       ├── install-systemd.sh
+│       ├── naver-rank-dashboard.service
+│       └── naver-rank-collector.service
 └── README.md                 # 설명 문서
 ```
 
@@ -71,19 +77,20 @@ naver-rank-dashboard/
 - VM 안 `GCE_APP_DIR` 경로에 이미 git clone 되어 있어야 함
 - VM에서 `python3`, `venv`, `git`, `systemd`, `curl` 사용 가능해야 함
 - `GCE_DASHBOARD_SERVICE`, `GCE_COLLECTOR_SERVICE`는 실제 systemd 서비스명이어야 함
-- 서비스의 `ExecStart`는 프로젝트 `.venv` 경로를 사용하도록 맞추는 편이 안전함
+- 서비스 파일 템플릿과 설치 스크립트는 `deploy/gce/` 아래에 포함되어 있음
 
-예시:
+### 3-4. systemd 파일
 
-```ini
-ExecStart=/home/ubuntu/naver-rank-dashboard/.venv/bin/python /home/ubuntu/naver-rank-dashboard/run_collector_loop.py
-```
+레포에 기본 템플릿이 포함되어 있습니다.
 
-```ini
-ExecStart=/home/ubuntu/naver-rank-dashboard/.venv/bin/streamlit run /home/ubuntu/naver-rank-dashboard/dashboard.py --server.port 8501
-```
+- `deploy/gce/naver-rank-dashboard.service`
+- `deploy/gce/naver-rank-collector.service`
+- `deploy/gce/install-systemd.sh`
+- `deploy/gce/README.md`
 
-### 3-4. 배포 시 수행 작업
+기본 경로는 `/home/ubuntu/naver-rank-dashboard`와 `ubuntu` 사용자를 기준으로 작성되어 있습니다. 경로 또는 사용자가 다르면 `install-systemd.sh` 인자로 치환해서 설치하면 됩니다.
+
+### 3-5. 배포 시 수행 작업
 
 1. VM 접속
 2. 지정 브랜치 최신 코드 가져오기
