@@ -1,0 +1,85 @@
+name: Deploy to Google Compute Engine
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-gce-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS_JSON }}'
+
+      - id: deploy
+        uses: google-github-actions/ssh-compute@v2
+        with:
+          instance_name: '${{ secrets.GCE_INSTANCE_NAME }}'
+          zone: '${{ secrets.GCE_ZONE }}'
+          user: '${{ secrets.GCE_SSH_USER }}'
+          ssh_private_key: '${{ secrets.GCE_SSH_PRIVATE_KEY }}'
+          command: |
+            set -euo pipefail
+
+            APP_DIR="${{ secrets.GCE_APP_DIR }}"
+            BRANCH="${{ secrets.GCE_DEPLOY_BRANCH }}"
+            DASHBOARD_SERVICE="${{ secrets.GCE_DASHBOARD_SERVICE }}"
+            COLLECTOR_SERVICE="${{ secrets.GCE_COLLECTOR_SERVICE }}"
+            DASHBOARD_HEALTH_URL="${{ secrets.GCE_DASHBOARD_HEALTH_URL }}"
+
+            if [ -z "$BRANCH" ]; then
+              BRANCH="main"
+            fi
+
+            if [ -z "$APP_DIR" ]; then
+              echo "[ERROR] GCE_APP_DIR is missing."
+              exit 1
+            fi
+
+            if [ -z "$DASHBOARD_SERVICE" ] || [ -z "$COLLECTOR_SERVICE" ]; then
+              echo "[ERROR] GCE service secrets are missing."
+              exit 1
+            fi
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+              echo "[ERROR] APP_DIR is not a git repository: $APP_DIR"
+              exit 1
+            fi
+
+            cd "$APP_DIR"
+
+            git fetch origin "$BRANCH"
+            git checkout "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            if [ -f requirements.txt ]; then
+              python3 -m venv .venv
+              .venv/bin/python -m pip install --upgrade pip
+              .venv/bin/python -m pip install -r requirements.txt
+            fi
+
+            sudo systemctl restart "$DASHBOARD_SERVICE"
+            sudo systemctl restart "$COLLECTOR_SERVICE"
+
+            sudo systemctl is-active --quiet "$DASHBOARD_SERVICE"
+            sudo systemctl is-active --quiet "$COLLECTOR_SERVICE"
+
+            if [ -n "$DASHBOARD_HEALTH_URL" ]; then
+              curl -fsS --retry 5 --retry-delay 2 "$DASHBOARD_HEALTH_URL" >/dev/null
+            fi
+
+            echo "[OK] Deploy and restart completed."
