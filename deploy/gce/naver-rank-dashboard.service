@@ -1,0 +1,15 @@
+[Unit]
+Description=Naver Rank Dashboard Streamlit Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/naver-rank-dashboard
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/naver-rank-dashboard/.venv/bin/streamlit run /home/ubuntu/naver-rank-dashboard/dashboard.py --server.address 0.0.0.0 --server.port 8501
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
