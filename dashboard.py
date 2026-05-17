@@ -13,6 +13,8 @@ from streamlit_autorefresh import st_autorefresh
 load_dotenv()
 
 DB_PATH = os.getenv("DB_PATH", "naver_rank.db")
+DB_TIMEOUT_SECONDS = 30
+DB_BUSY_TIMEOUT_MS = 30_000
 KST = ZoneInfo("Asia/Seoul")
 
 st.set_page_config(
@@ -91,7 +93,10 @@ refresh_count = st_autorefresh(interval=60 * 1000, key="dashboard_autorefresh")
 
 
 def get_conn():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS)
+    conn.execute(f"PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
 
 
 @st.cache_data(ttl=30)
