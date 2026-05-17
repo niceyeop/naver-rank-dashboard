@@ -30,9 +30,15 @@ jobs:
             BRANCH="${{ secrets.NCLOUD_DEPLOY_BRANCH }}"
             DASHBOARD_SERVICE="${{ secrets.NCLOUD_DASHBOARD_SERVICE }}"
             COLLECTOR_SERVICE="${{ secrets.NCLOUD_COLLECTOR_SERVICE }}"
+            DASHBOARD_HEALTH_URL="${{ secrets.NCLOUD_DASHBOARD_HEALTH_URL }}"
 
             if [ -z "$BRANCH" ]; then
               BRANCH="main"
+            fi
+
+            if [ -z "$APP_DIR" ]; then
+              echo "[ERROR] NCLOUD_APP_DIR is missing."
+              exit 1
             fi
 
             if [ -z "$DASHBOARD_SERVICE" ] || [ -z "$COLLECTOR_SERVICE" ]; then
@@ -53,8 +59,10 @@ jobs:
             git reset --hard "origin/$BRANCH"
 
             if [ -f requirements.txt ]; then
-              python3 -m pip install --upgrade pip
-              python3 -m pip install -r requirements.txt
+              python3 -m venv .venv
+              .venv/bin/python -m pip install --upgrade pip
+              .venv/bin/python -m pip install -r requirements.txt
+              echo "[INFO] Dependencies installed in $APP_DIR/.venv"
             fi
 
             sudo systemctl restart "$DASHBOARD_SERVICE"
@@ -62,5 +70,9 @@ jobs:
 
             sudo systemctl is-active --quiet "$DASHBOARD_SERVICE"
             sudo systemctl is-active --quiet "$COLLECTOR_SERVICE"
+
+            if [ -n "$DASHBOARD_HEALTH_URL" ]; then
+              curl -fsS --retry 5 --retry-delay 2 "$DASHBOARD_HEALTH_URL" >/dev/null
+            fi
 
             echo "[OK] Deploy and restart completed."
